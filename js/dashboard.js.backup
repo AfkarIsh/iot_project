@@ -1,0 +1,678 @@
+// ==========================================
+// ESP32 Sensor Dashboard - JavaScript
+// Real-time data fetching, UI updates, charts
+// ==========================================
+
+const API_BASE = 'api/';
+const UPDATE_INTERVAL = 3000; // 3 seconds
+let isConnected = false;
+let updateTimer = null;
+let airQualityChart = null;
+let trendChart = null;
+let tempMiniChart = null;
+let humMiniChart = null;
+let soilMiniChart = null;
+let historicalData = [];
+
+// DOM Elements
+const elements = {
+    // Sensor values
+    temperature: document.getElementById('temperature'),
+    humidity: document.getElementById('humidity'),
+    co2: document.getElementById('co2'),
+    co: document.getElementById('co'),
+    nh4: document.getElementById('nh4'),
+    alcohol: document.getElementById('alcohol'),
+    acetone: document.getElementById('acetone'),
+    soilMoisture: document.getElementById('soilMoisture'),
+    mq135Raw: document.getElementById('mq135Raw'),
+    mq135Voltage: document.getElementById('mq135Voltage'),
+
+    // Status indicators
+    motionStatus: document.getElementById('motionStatus'),
+    relayStatus: document.getElementById('relayStatus'),
+    ledStatus: document.getElementById('ledStatus'),
+    connectionStatus: document.getElementById('connectionStatus'),
+    connectionStatusSidebar: document.getElementById('connectionStatusSidebar'),
+    lastUpdate: document.getElementById('lastUpdate'),
+
+    // Control toggles
+    relayToggle: document.getElementById('relayToggle'),
+    ledToggle: document.getElementById('ledToggle'),
+
+    // Sidebar
+    hamburger: document.getElementById('hamburger'),
+    sidebar: document.getElementById('sidebar'),
+    closeSidebar: document.getElementById('closeSidebar'),
+    sidebarOverlay: document.getElementById('sidebarOverlay'),
+    mainContent: document.getElementById('mainContent')
+};
+
+// Initialize dashboard
+function init() {
+    console.log('🚀 ESP32 Dashboard initializing...');
+    setupCharts();
+    setupRelayControl();
+    setupLEDControl();
+    setupTheme();
+    fetchLatestData();
+    fetchHistoricalData();
+    startAutoUpdate();
+}
+
+// Setup Theme System
+function setupTheme() {
+    const themeSelect = document.getElementById('themeSelect');
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    const systemPref = window.matchMedia('(prefers-color-scheme: dark)');
+
+    // Function to apply theme
+    const applyTheme = (theme) => {
+        if (theme === 'system') {
+            const systemTheme = systemPref.matches ? 'dark' : 'light';
+            if (systemTheme === 'light') {
+                document.body.setAttribute('data-theme', 'light');
+            } else {
+                document.body.removeAttribute('data-theme');
+            }
+        } else {
+            if (theme === 'light') {
+                document.body.setAttribute('data-theme', 'light');
+            } else {
+                document.body.removeAttribute('data-theme');
+            }
+        }
+    };
+
+    // Initial Apply
+    applyTheme(savedTheme);
+    if (themeSelect) themeSelect.value = savedTheme;
+
+    // Event Listener for Selector
+    if (themeSelect) {
+        themeSelect.addEventListener('change', (e) => {
+            const newTheme = e.target.value;
+            localStorage.setItem('theme', newTheme);
+            applyTheme(newTheme);
+        });
+    }
+
+    // Event Listener for System Preference
+    systemPref.addEventListener('change', (e) => {
+        if (localStorage.getItem('theme') === 'system') {
+            applyTheme('system');
+        }
+    });
+}
+
+// Setup relay toggle control
+function setupRelayControl() {
+    if (elements.relayToggle) {
+        elements.relayToggle.addEventListener('change', async (e) => {
+            const isOn = e.target.checked;
+            console.log(`🔌 Relay toggle changed: ${isOn ? 'ON' : 'OFF'}`);
+
+            try {
+                // Send Relay control command to server
+                const response = await fetch(`${API_BASE}control_relay.php`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ relay_on: isOn })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    console.log('✓ Relay control command sent successfully');
+                    updateStatusIndicator(elements.relayStatus, isOn, 'ON', 'OFF');
+                } else {
+                    console.error('✗ Relay control failed:', result);
+                    // Revert toggle on failure
+                    elements.relayToggle.checked = !isOn;
+                }
+            } catch (error) {
+                console.error('✗ Error sending Relay control:', error);
+                // Revert toggle on error
+                elements.relayToggle.checked = !isOn;
+            }
+        });
+    }
+}
+
+// Setup LED toggle control
+function setupLEDControl() {
+    if (elements.ledToggle) {
+        elements.ledToggle.addEventListener('change', async (e) => {
+            const isOn = e.target.checked;
+            console.log(`💡 LED toggle changed: ${isOn ? 'ON' : 'OFF'}`);
+
+            try {
+                // Send LED control command to server
+                const response = await fetch(`${API_BASE}control_led.php`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ led_on: isOn })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    console.log('✓ LED control command sent successfully');
+                    updateLEDStatus(isOn);
+                } else {
+                    console.error('✗ LED control failed:', result);
+                    // Revert toggle on failure
+                    elements.ledToggle.checked = !isOn;
+                }
+            } catch (error) {
+                console.error('✗ Error sending LED control:', error);
+                // Revert toggle on error
+
+                if (isOn) {
+                    elements.ledStatus.classList.add('status-active');
+                    if (ledDot) {
+                        ledDot.style.backgroundColor = '#ffc837';
+                        ledDot.style.boxShadow = '0 0 10px #ffc837';
+                    }
+                    if (ledLabel) {
+                        ledLabel.innerText = 'ON';
+                        ledLabel.style.color = '#ffc837';
+                    }
+                } else {
+                    elements.ledStatus.classList.remove('status-active');
+                    if (ledDot) {
+                        ledDot.style.backgroundColor = '#ccc';
+                        ledDot.style.boxShadow = 'none';
+                    }
+                    if (ledLabel) {
+                        ledLabel.innerText = 'OFF';
+                        ledLabel.style.color = '#555';
+                    }
+                }
+            }
+
+            // Setup Chart.js charts
+            function setupCharts() {
+                // Setup Mini Charts Options
+                const miniChartOptions = {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '75%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: false }
+                    },
+                    scales: {
+                        x: { display: false },
+                        y: { display: false }
+                    },
+                    animation: {
+                        duration: 0 // Disable animation for smoother updates
+                    }
+                };
+
+                // Temperature Mini Chart
+                const tempCtx = document.getElementById('tempMiniChart');
+                if (tempCtx) {
+                    tempMiniChart = new Chart(tempCtx.getContext('2d'), {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Value', 'Remaining'],
+                            datasets: [{
+                                data: [0, 100],
+                                backgroundColor: ['#a18cd1', 'rgba(255,255,255,0.1)'],
+                                borderWidth: 0
+                            }]
+                        },
+                        options: miniChartOptions
+                    });
+                }
+
+                // Humidity Mini Chart
+                const humCtx = document.getElementById('humMiniChart');
+                if (humCtx) {
+                    humMiniChart = new Chart(humCtx.getContext('2d'), {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Value', 'Remaining'],
+                            datasets: [{
+                                data: [0, 100],
+                                backgroundColor: ['#66a6ff', 'rgba(255,255,255,0.1)'],
+                                borderWidth: 0
+                            }]
+                        },
+                        options: miniChartOptions
+                    });
+                }
+
+                // Soil Moisture Mini Chart
+                const soilCtx = document.getElementById('soilMiniChart');
+                if (soilCtx) {
+                    soilMiniChart = new Chart(soilCtx.getContext('2d'), {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Value', 'Remaining'],
+                            datasets: [{
+                                data: [0, 100],
+                                backgroundColor: ['#84fab0', 'rgba(255,255,255,0.1)'],
+                                borderWidth: 0
+                            }]
+                        },
+                        options: miniChartOptions
+                    });
+                }
+
+                // Main Air Quality Chart
+                const aqCtx = document.getElementById('airQualityChart');
+                if (aqCtx) {
+                    airQualityChart = new Chart(aqCtx.getContext('2d'), {
+                        type: 'bar',
+                        data: {
+                            labels: ['CO₂', 'CO', 'NH₄', 'Alcohol', 'Acetone'],
+                            datasets: [{
+                                label: 'Concentration (ppm)',
+                                data: [0, 0, 0, 0, 0],
+                                backgroundColor: [
+                                    'rgba(153, 102, 255, 0.7)', // CO2 - Purple
+                                    'rgba(255, 99, 132, 0.7)',  // CO - Red
+                                    'rgba(54, 162, 235, 0.7)',  // NH4 - Blue
+                                    'rgba(255, 206, 86, 0.7)',  // Alcohol - Yellow
+                                    'rgba(255, 159, 64, 0.7)'   // Acetone - Orange
+                                ],
+                                borderColor: [
+                                    'rgba(153, 102, 255, 1)',
+                                    'rgba(255, 99, 132, 1)',
+                                    'rgba(54, 162, 235, 1)',
+                                    'rgba(255, 206, 86, 1)',
+                                    'rgba(255, 159, 64, 1)'
+                                ],
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                                    ticks: { color: '#a0aec0' }
+                                },
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { color: '#a0aec0' }
+                                }
+                            },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                                    titleColor: '#fff',
+                                    bodyColor: '#fff'
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // Trend Chart
+                const trendCtx = document.getElementById('trendChart');
+                if (trendCtx) {
+                    // Custom Tooltip
+                    const customTooltip = {
+                        backgroundColor: '#fff',
+                        titleColor: '#333',
+                        bodyColor: '#666',
+                        borderColor: 'rgba(0,0,0,0.1)',
+                        borderWidth: 1,
+                        padding: 10,
+                        displayColors: true,
+                        boxPadding: 4,
+                        callbacks: {
+                            label: function (context) {
+                                return context.dataset.label + ': ' + context.parsed.y + ' ppm';
+                            }
+                        }
+                    };
+
+                    trendChart = new Chart(trendCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [
+                                {
+                                    label: 'CO₂',
+                                    data: [],
+                                    borderColor: '#6C5DD3', // Purple from reference
+                                    backgroundColor: 'rgba(108, 93, 211, 0.1)',
+                                    borderWidth: 3,
+                                    pointBackgroundColor: '#fff',
+                                    pointBorderColor: '#6C5DD3',
+                                    pointBorderWidth: 2,
+                                    pointRadius: 4,
+                                    pointHoverRadius: 6,
+                                    fill: true,
+                                    tension: 0.4 // Smooth curve
+                                },
+                                {
+                                    label: 'CO',
+                                    data: [],
+                                    borderColor: '#00D68F', // Green/Teal from reference
+                                    backgroundColor: 'rgba(0, 214, 143, 0.1)',
+                                    borderWidth: 3,
+                                    pointBackgroundColor: '#fff',
+                                    pointBorderColor: '#00D68F',
+                                    pointBorderWidth: 2,
+                                    pointRadius: 4,
+                                    pointHoverRadius: 6,
+                                    fill: true,
+                                    tension: 0.4
+                                },
+                                {
+                                    label: 'NH₄',
+                                    data: [],
+                                    borderColor: '#FF5B5B', // Red/Pink (Rejected style)
+                                    backgroundColor: 'rgba(255, 91, 91, 0.1)',
+                                    borderWidth: 3,
+                                    pointBackgroundColor: '#fff',
+                                    pointBorderColor: '#FF5B5B',
+                                    pointBorderWidth: 2,
+                                    pointRadius: 4,
+                                    pointHoverRadius: 6,
+                                    fill: true,
+                                    tension: 0.4
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false,
+                            },
+                            plugins: {
+                                legend: {
+                                    position: 'top',
+                                    align: 'end',
+                                    labels: {
+                                        usePointStyle: true,
+                                        boxWidth: 8,
+                                        padding: 20,
+                                        font: {
+                                            family: "'Inter', sans-serif",
+                                            size: 12
+                                        },
+                                        color: '#a0aec0' // Will be overridden by theme, but good default
+                                    }
+                                },
+                                tooltip: customTooltip
+                            },
+                            scales: {
+                                y: {
+                                    grid: {
+                                        color: 'rgba(255, 255, 255, 0.05)',
+                                        drawBorder: false,
+                                        borderDash: [5, 5]
+                                    },
+                                    ticks: {
+                                        color: '#a0aec0',
+                                        font: {
+                                            family: "'Inter', sans-serif",
+                                            size: 11
+                                        },
+                                        padding: 10
+                                    },
+                                    border: { display: false }
+                                },
+                                x: {
+                                    grid: {
+                                        display: false,
+                                        drawBorder: false
+                                    },
+                                    ticks: {
+                                        color: '#a0aec0',
+                                        font: {
+                                            family: "'Inter', sans-serif",
+                                            size: 11
+                                        },
+                                        padding: 10
+                                    },
+                                    border: { display: false }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Fetch latest data from API
+            async function fetchLatestData() {
+                try {
+                    const response = await fetch(`${API_BASE}get_history.php?limit=20`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+
+                    const jsonResponse = await response.json();
+
+                    if (jsonResponse.success && Array.isArray(jsonResponse.data)) {
+                        historicalData = jsonResponse.data.reverse(); // Newest last
+                        updateTrendChart();
+                    } else if (Array.isArray(jsonResponse)) {
+                        historicalData = jsonResponse.reverse();
+                        updateTrendChart();
+                    }
+
+                } catch (error) {
+                    console.error('History Fetch Error:', error);
+                }
+            }
+
+            // Update UI elements
+            function updateUI(data) {
+                console.log('updateUI received data:', data); // Debug log
+
+                // Update Text Values
+                updateValue(elements.temperature, data.temperature, 1);
+                updateValue(elements.humidity, data.humidity, 1);
+                updateValue(elements.soilMoisture, data.soil_percent, 1); // Correct key
+                updateValue(elements.co2, data.co2_ppm, 0);
+                updateValue(elements.co, data.co_ppm, 2);
+                updateValue(elements.nh4, data.nh4_ppm, 2);
+                updateValue(elements.alcohol, data.alcohol_ppm, 2);
+                updateValue(elements.acetone, data.acetone_ppm, 2);
+
+                if (elements.mq135Raw) elements.mq135Raw.innerText = data.mq135_raw; // Correct key
+                if (elements.mq135Voltage) elements.mq135Voltage.innerText = parseFloat(data.mq135_voltage).toFixed(2);
+                if (elements.lastUpdate) elements.lastUpdate.innerText = `Last Update: ${data.timestamp}`; // Correct key
+
+                // Update Motion Status
+                if (elements.motionStatus) {
+                    const motionDot = elements.motionStatus.querySelector('.status-dot');
+                    const motionLabel = elements.motionStatus.querySelector('.status-label');
+
+                    const isMotion = data.motion_detected === true || data.motion_detected == 1 || data.motion_detected === "1";
+
+                    if (isMotion) {
+                        elements.motionStatus.classList.add('status-active');
+                        if (motionDot) {
+                            motionDot.style.backgroundColor = '#ff4757';
+                            motionDot.style.boxShadow = '0 0 10px #ff4757';
+                        }
+                        if (motionLabel) {
+                            motionLabel.innerText = 'Motion Detected!';
+                            motionLabel.style.color = '#ff4757';
+                        }
+                    } else {
+                        elements.motionStatus.classList.remove('status-active');
+                        if (motionDot) {
+                            motionDot.style.backgroundColor = '#ccc';
+                            motionDot.style.boxShadow = 'none';
+                        }
+                        if (motionLabel) {
+                            motionLabel.innerText = 'No Motion';
+                            motionLabel.style.color = '#555';
+                        }
+                    }
+                }
+
+                // Update Relay Status
+                if (elements.relayStatus) {
+                    const relayDot = elements.relayStatus.querySelector('.status-dot');
+                    const relayLabel = elements.relayStatus.querySelector('.status-label');
+
+                    const isRelayOn = data.relay_on === true || data.relay_on == 1 || data.relay_on === "1"; // Correct key
+
+                    if (isRelayOn) {
+                        elements.relayStatus.classList.add('status-active');
+                        if (relayDot) relayDot.style.backgroundColor = '#2ed573';
+                        if (relayLabel) {
+                            relayLabel.innerText = 'ON';
+                            relayLabel.style.color = '#2ed573';
+                        }
+                        if (elements.relayToggle) elements.relayToggle.checked = true;
+                    } else {
+                        elements.relayStatus.classList.remove('status-active');
+                        if (relayDot) relayDot.style.backgroundColor = '#ccc';
+                        if (relayLabel) {
+                            relayLabel.innerText = 'OFF';
+                            relayLabel.style.color = '#555';
+                        }
+                        if (elements.relayToggle) elements.relayToggle.checked = false;
+                    }
+                }
+
+                // Update Mini Charts
+                if (tempMiniChart) {
+                    const temp = parseFloat(data.temperature) || 0;
+                    tempMiniChart.data.datasets[0].data = [temp, Math.max(0, 50 - temp)];
+                    tempMiniChart.update();
+                }
+                if (humMiniChart) {
+                    const hum = parseFloat(data.humidity) || 0;
+                    humMiniChart.data.datasets[0].data = [hum, Math.max(0, 100 - hum)];
+                    humMiniChart.update();
+                }
+                if (soilMiniChart) {
+                    const soil = parseFloat(data.soil_percent) || 0; // Correct key
+                    soilMiniChart.data.datasets[0].data = [soil, Math.max(0, 100 - soil)];
+                    soilMiniChart.update();
+                }
+
+                // Update Air Quality Chart
+                if (airQualityChart) {
+                    airQualityChart.data.datasets[0].data = [
+                        data.co2_ppm,
+                        data.co_ppm,
+                        data.nh4_ppm,
+                        data.alcohol_ppm,
+                        data.acetone_ppm
+                    ];
+                    airQualityChart.update();
+                }
+
+                // Update LED Status from data
+                if (data.led_on !== undefined) {
+                    const isLEDOn = data.led_on === true || data.led_on == 1 || data.led_on === "1";
+                    if (elements.ledToggle) elements.ledToggle.checked = isLEDOn;
+                    updateLEDStatus(isLEDOn);
+                }
+            }
+
+            // Helper to update value with animation
+            function updateValue(element, value, decimals) {
+                if (!element) return;
+                const formatted = parseFloat(value).toFixed(decimals);
+                if (element.innerText !== formatted && element.innerText !== '--') {
+                    element.style.opacity = '0.5';
+                    setTimeout(() => element.style.opacity = '1', 200);
+                }
+                element.innerText = formatted;
+            }
+
+            // Update status indicator helper
+            function updateStatusIndicator(element, isActive, activeText, inactiveText) {
+                if (!element) return;
+                const label = element.querySelector('.status-label');
+                if (isActive) {
+                    element.classList.add('active');
+                    if (label) label.textContent = activeText;
+                } else {
+                    element.classList.remove('active');
+                    if (label) label.textContent = inactiveText;
+                }
+            }
+
+            // Update Trend Chart
+            function updateTrendChart() {
+                if (!trendChart || historicalData.length === 0) return;
+
+                const labels = historicalData.map(d => {
+                    const date = new Date(d.reading_time);
+                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                });
+
+                trendChart.data.labels = labels;
+                trendChart.data.datasets[0].data = historicalData.map(d => d.co2_ppm);
+                trendChart.data.datasets[1].data = historicalData.map(d => d.co_ppm);
+                trendChart.data.datasets[2].data = historicalData.map(d => d.nh4_ppm);
+
+                trendChart.update();
+            }
+
+            // Set connection status
+            function setConnectionStatus(connected) {
+                if (connected === isConnected) return;
+                isConnected = connected;
+
+                const statusText = elements.connectionStatus ? elements.connectionStatus.querySelector('.status-text') : null;
+                const sidebarStatusText = elements.connectionStatusSidebar ? elements.connectionStatusSidebar.querySelector('.status-text') : null;
+
+                const text = connected ? 'Connected' : 'Disconnected';
+
+                if (statusText) statusText.textContent = text;
+                if (sidebarStatusText) sidebarStatusText.textContent = text;
+
+                if (elements.connectionStatus) {
+                    if (connected) elements.connectionStatus.classList.remove('disconnected');
+                    else elements.connectionStatus.classList.add('disconnected');
+                }
+
+                if (elements.connectionStatusSidebar) {
+                    if (connected) elements.connectionStatusSidebar.classList.remove('disconnected');
+                    else elements.connectionStatusSidebar.classList.add('disconnected');
+                }
+            }
+
+            // Start auto update
+            function startAutoUpdate() {
+                if (updateTimer) clearInterval(updateTimer);
+                updateTimer = setInterval(() => {
+                    fetchLatestData();
+                    // Fetch history less frequently? For now every time
+                    fetchHistoricalData();
+                }, UPDATE_INTERVAL);
+            }
+
+            // Handle visibility change
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    if (updateTimer) clearInterval(updateTimer);
+                } else {
+                    fetchLatestData();
+                    fetchHistoricalData();
+                    startAutoUpdate();
+                }
+            });
+
+            // Initialize
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+
+            console.log('✅ Dashboard script loaded');

@@ -1,0 +1,60 @@
+<!-- Test API Endpoint -->
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>API Test</title>
+</head>
+
+<body>
+    <h1>ESP32 API Test</h1>
+    <button onclick="testGetLatest()">Test Get Latest</button>
+    <button onclick="testSaveData()">Test Save Data</button>
+    <pre id="output"></pre>
+
+    <script>
+        async function testGetLatest() {
+            try {
+                const response = await fetch('api/get_latest.php');
+                const data = await response.json();
+                document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('output').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function testSaveData() {
+            const testData = {
+                temperature: 25.5,
+                humidity: 60.0,
+                mq135_raw: 2048,
+                mq135_voltage: 1.65,
+                co2_ppm: 450.0,
+                nh4_ppm: 12.5,
+                alcohol_ppm: 8.3,
+                co_ppm: 5.2,
+                acetone_ppm: 6.1,
+                soil_raw: 1500,
+                soil_percent: 65,
+                motion_detected: false,
+                relay_on: false
+            };
+
+            try {
+                const response = await fetch('api/save_data.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(testData)
+                });
+                const data = await response.json();
+                document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('output').textContent = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+
+</html>
